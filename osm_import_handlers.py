@@ -1,5 +1,8 @@
 import bpy, bmesh
 import utils, osm_utils
+import osr
+import ogr
+import gdal_utils
 
 LEVEL_HEIGHT = 3.1
 
@@ -34,6 +37,56 @@ class Buildings:
                 bottomlevel,unit = osm_utils.parse_scalar_and_unit(tags["building:min_level"])
                 bottom = bottomlevel * LEVEL_HEIGHT
 
+        oSourceSRS = osr.SpatialReference()
+        oTargetSRS = osr.SpatialReference()
+
+        oSourceSRS.ImportFromEPSG( 4326 )
+        oTargetSRS.ImportFromEPSG( 28992 )
+        ct = osr.CoordinateTransformation( oSourceSRS, oTargetSRS )
+
+        tiles = set([])
+        low_x = 999999999
+        low_y = 999999999
+        high_x = 0
+        high_y = 0
+        first_x = 0
+        first_y = 0
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AssignSpatialReference(oTargetSRS)
+
+        for node in range(numNodes):
+            node = parser.nodes[wayNodes[node]]
+            # x,y,z in RD.
+            x,y,z = ct.TransformPoint(node["lon"], node["lat"])
+
+            if first_x == 0:
+                first_x = x
+                first_y = y
+
+            if ( x < low_x ):
+                low_x = x
+            if ( y < low_y ):
+                low_y = y
+            if ( x > high_x ):
+                high_x = x
+            if ( y > high_y ):
+                high_y = y
+
+            ring.AddPoint( x, y ) 
+
+        ring.AddPoint( first_x, first_y )
+
+        # Create polygon
+        poly = ogr.Geometry(ogr.wkbPolygon)
+        poly.AddGeometry(ring)
+
+        low_x = low_x - 5
+        low_y = low_y - 5
+        high_x = high_x + 5
+        high_y = high_y + 5
+
+        hmin, hmax = gdal_utils.calc_height( poly, low_x, low_y, high_x, high_y )
+
         for node in range(numNodes):
             node = parser.nodes[wayNodes[node]]
             v = kwargs["projection"].fromGeographic(node["lat"], node["lon"])
@@ -43,7 +96,10 @@ class Buildings:
 
         if not kwargs["bm"]:
             thickness = 0
-            if "height" in tags:
+            if hmin != 0 and hmax != 0:
+                thickness = hmax-hmin
+                print ( "thickness = ", thickness )
+            elif "height" in tags:
                 # There's a height tag. It's parsed as text and could look like: 25, 25m, 25 ft, etc.
                 thickness,unit = osm_utils.parse_scalar_and_unit(tags["height"])
             elif "building:level" in tags:
